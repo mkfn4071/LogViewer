@@ -1,0 +1,16 @@
+# MegaLogViewer - Python Dependencies
+# Python 3.8+ required
+#
+# Install all dependencies with:
+#   pip install -r requirements.txt
+
+# Core visualization library for plotting and data visualization
+# Used for: FigureCanvasTkAgg, NavigationToolbar2Tk, Figure
+matplotlib>=3.5.0
+
+# Note: tkinter is included with Python standard library
+# If tkinter is missing, install with:
+#   - Ubuntu/Debian: sudo apt-get install python3-tk
+#   - Fedora: sudo dnf install python3-tkinter
+#   - macOS: included with Python from python.org
+#   - Windows: included with Python installer
