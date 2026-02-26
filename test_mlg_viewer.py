@@ -15,7 +15,7 @@ import struct
 from typing import Dict, List
 import io
 
-from mlg_log_viewer import MLGParser, LogData
+from mlg_log_viewer import MLGParser, LogData, MSQParser
 
 
 class TestMLGParser(unittest.TestCase):
@@ -445,6 +445,137 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(log_data.record_count, 1)
         self.assertAlmostEqual(log_data.records[0]['RPM'], 1500.0)
         self.assertAlmostEqual(log_data.records[0]['MAP'], 75.0)
+
+
+class TestMSQParser(unittest.TestCase):
+    """Tests for MSQParser class - XML tune file parsing."""
+    
+    MINIMAL_MSQ = '''<?xml version="1.0" encoding="ISO-8859-1"?>
+<msq xmlns="http://www.msefi.com/:msq">
+    <bibliography author="TunerStudio MS" tuneComment="" writeDate="Sun Feb 22 12:57:42 CST 2026"/>
+    <versionInfo fileFormat="5.0" firmwareInfo="MS3" nPages="1" signature="MS3 Format"/>
+    <page number="0" size="1024">
+        <constant name="nCylinders">"8"</constant>
+        <constant digits="0" name="crankingRPM" units="RPM">300.0</constant>
+        <constant digits="1" name="triggerOffset" units="deg">15.0</constant>
+        <constant cols="1" digits="0" name="fuelCorr" rows="2" units="%">
+         100.0 
+         163.0 
+      </constant>
+    </page>
+    <page>
+        <pcVariable digits="0" name="rpmhigh" units="rpm">9000.0</pcVariable>
+        <pcVariable name="sensor01Alias">Oil Pressure</pcVariable>
+    </page>
+</msq>'''
+    
+    def _parse_string(self, xml_content: str) -> dict:
+        """Parse MSQ from string using a temp file mock."""
+        import tempfile
+        import os
+        fd, path = tempfile.mkstemp(suffix='.msq')
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(xml_content)
+            parser = MSQParser(path)
+            return parser.parse()
+        finally:
+            os.unlink(path)
+    
+    def test_parse_bibliography(self):
+        """Test bibliography metadata extraction."""
+        result = self._parse_string(self.MINIMAL_MSQ)
+        bib = result['bibliography']
+        self.assertEqual(bib['author'], 'TunerStudio MS')
+        self.assertIn('writeDate', bib)
+    
+    def test_parse_version_info(self):
+        """Test version info extraction."""
+        result = self._parse_string(self.MINIMAL_MSQ)
+        info = result['version_info']
+        self.assertEqual(info['fileFormat'], '5.0')
+        self.assertEqual(info['nPages'], '1')
+    
+    def test_parse_constants(self):
+        """Test constant element parsing."""
+        result = self._parse_string(self.MINIMAL_MSQ)
+        entries = result['entries']
+        
+        # Find nCylinders constant
+        cyl = next(e for e in entries if e['name'] == 'nCylinders')
+        self.assertEqual(cyl['type'], 'constant')
+        self.assertEqual(cyl['value'], '8')
+        self.assertEqual(cyl['page'], '0')
+    
+    def test_parse_constant_with_units_digits(self):
+        """Test constant with units and digits attributes."""
+        result = self._parse_string(self.MINIMAL_MSQ)
+        entries = result['entries']
+        
+        rpm = next(e for e in entries if e['name'] == 'crankingRPM')
+        self.assertEqual(rpm['units'], 'RPM')
+        self.assertEqual(rpm['digits'], '0')
+        self.assertEqual(rpm['value'], '300.0')
+    
+    def test_parse_table_constant(self):
+        """Test table constant with rows and cols."""
+        result = self._parse_string(self.MINIMAL_MSQ)
+        entries = result['entries']
+        
+        fc = next(e for e in entries if e['name'] == 'fuelCorr')
+        self.assertEqual(fc['dimensions'], '2x1')
+        self.assertIn('100.0', fc['value'])
+        self.assertIn('163.0', fc['value'])
+    
+    def test_parse_pc_variables(self):
+        """Test pcVariable element parsing."""
+        result = self._parse_string(self.MINIMAL_MSQ)
+        entries = result['entries']
+        
+        pc_entries = [e for e in entries if e['type'] == 'pcVariable']
+        self.assertTrue(len(pc_entries) >= 2)
+        
+        rpmhigh = next(e for e in pc_entries if e['name'] == 'rpmhigh')
+        self.assertEqual(rpmhigh['value'], '9000.0')
+        self.assertEqual(rpmhigh['units'], 'rpm')
+    
+    def test_entry_count(self):
+        """Test total entry count."""
+        result = self._parse_string(self.MINIMAL_MSQ)
+        self.assertEqual(result['entry_count'], len(result['entries']))
+        self.assertTrue(result['entry_count'] >= 6)  # 4 constants + 2 pcVariables
+    
+    def test_filename_stored(self):
+        """Test that filename is stored in result."""
+        result = self._parse_string(self.MINIMAL_MSQ)
+        self.assertTrue(result['filename'].endswith('.msq'))
+    
+    def test_empty_msq(self):
+        """Test parsing MSQ with no entries."""
+        empty_msq = '''<?xml version="1.0" encoding="ISO-8859-1"?>
+<msq xmlns="http://www.msefi.com/:msq">
+    <bibliography author="Test"/>
+    <versionInfo fileFormat="5.0"/>
+</msq>'''
+        result = self._parse_string(empty_msq)
+        self.assertEqual(result['entry_count'], 0)
+        self.assertEqual(len(result['entries']), 0)
+    
+    def test_constant_without_optional_attrs(self):
+        """Test constant missing optional attributes."""
+        msq = '''<?xml version="1.0" encoding="ISO-8859-1"?>
+<msq xmlns="http://www.msefi.com/:msq">
+    <page number="0">
+        <constant name="simple">42.0</constant>
+    </page>
+</msq>'''
+        result = self._parse_string(msq)
+        entry = result['entries'][0]
+        self.assertEqual(entry['name'], 'simple')
+        self.assertEqual(entry['value'], '42.0')
+        self.assertEqual(entry['units'], '')
+        self.assertEqual(entry['digits'], '')
+        self.assertEqual(entry['dimensions'], '')
 
 
 if __name__ == '__main__':

@@ -15,10 +15,127 @@ import struct
 from datetime import datetime
 import csv
 import json
-from typing import List, Dict, Any, Tuple
+import xml.etree.ElementTree as ET
+from typing import List, Dict, Any, Tuple, Optional
 import os
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+
+class MSQParser:
+    """
+    Parser for TunerStudio MS .msq tune files.
+    
+    Reads XML-formatted MegaSquirt tune files and extracts
+    constants and pcVariables with their metadata.
+    """
+    
+    # XML namespace used in MSQ files
+    NAMESPACE = {'msq': 'http://www.msefi.com/:msq'}
+    
+    def __init__(self, file_path: str) -> None:
+        """Initialize parser with file path."""
+        self.file_path = file_path
+        self.tree: Optional[ET.ElementTree] = None
+        self.root: Optional[ET.Element] = None
+    
+    def parse(self) -> Dict[str, Any]:
+        """Parse MSQ file and return structured data."""
+        self.tree = ET.parse(self.file_path)
+        self.root = self.tree.getroot()
+        
+        result = {
+            'filename': os.path.basename(self.file_path),
+            'bibliography': self._parse_bibliography(),
+            'version_info': self._parse_version_info(),
+            'entries': self._parse_all_entries(),
+        }
+        result['entry_count'] = len(result['entries'])
+        return result
+    
+    def _parse_bibliography(self) -> Dict[str, str]:
+        """Extract bibliography metadata."""
+        bib = self.root.find('msq:bibliography', self.NAMESPACE)
+        if bib is None:
+            # Try without namespace
+            bib = self.root.find('bibliography')
+        if bib is None:
+            return {}
+        return dict(bib.attrib)
+    
+    def _parse_version_info(self) -> Dict[str, str]:
+        """Extract version information."""
+        info = self.root.find('msq:versionInfo', self.NAMESPACE)
+        if info is None:
+            info = self.root.find('versionInfo')
+        if info is None:
+            return {}
+        return dict(info.attrib)
+    
+    def _parse_all_entries(self) -> List[Dict[str, Any]]:
+        """Parse all constants and pcVariables from all pages."""
+        entries = []
+        
+        # Find all pages (with and without namespace)
+        pages = self.root.findall('msq:page', self.NAMESPACE)
+        if not pages:
+            pages = self.root.findall('page')
+        
+        for page in pages:
+            page_number = page.get('number', 'config')
+            
+            # Parse constants
+            for const in page.findall('msq:constant', self.NAMESPACE):
+                entries.append(self._parse_element(const, 'constant', page_number))
+            if not any(e['type'] == 'constant' for e in entries if entries):
+                for const in page.findall('constant'):
+                    entries.append(self._parse_element(const, 'constant', page_number))
+            
+            # Parse pcVariables
+            for pcvar in page.findall('msq:pcVariable', self.NAMESPACE):
+                entries.append(self._parse_element(pcvar, 'pcVariable', page_number))
+            if not any(e['type'] == 'pcVariable' and e['page'] == page_number for e in entries):
+                for pcvar in page.findall('pcVariable'):
+                    entries.append(self._parse_element(pcvar, 'pcVariable', page_number))
+        
+        return entries
+    
+    def _parse_element(self, elem: ET.Element, elem_type: str,
+                       page_number: str) -> Dict[str, Any]:
+        """Parse a single constant or pcVariable element."""
+        name = elem.get('name', '')
+        units = elem.get('units', '')
+        digits = elem.get('digits', '')
+        rows = elem.get('rows', '')
+        cols = elem.get('cols', '')
+        
+        # Get the text value
+        raw_value = (elem.text or '').strip()
+        
+        # Determine if this is a table (multi-value)
+        is_table = bool(rows or cols)
+        
+        if is_table:
+            # For tables, show dimensions and clean up value
+            row_count = int(rows) if rows else 1
+            col_count = int(cols) if cols else 1
+            # Split and clean multi-line values
+            values = raw_value.split()
+            display_value = ' '.join(values)
+            dimensions = f"{row_count}x{col_count}"
+        else:
+            display_value = raw_value.strip('"')
+            dimensions = ''
+        
+        return {
+            'page': str(page_number),
+            'type': elem_type,
+            'name': name,
+            'value': display_value,
+            'units': units,
+            'digits': digits,
+            'dimensions': dimensions,
+        }
 
 
 class MLGParser:
@@ -349,6 +466,97 @@ class LogViewerApp(tk.Tk):
     WINDOW_WIDTH = 1200
     WINDOW_HEIGHT = 800
     
+    # Theme color palettes
+    LIGHT_THEME = {
+        'bg': '#f0f0f0',
+        'fg': '#000000',
+        'surface': '#ffffff',
+        'surface_alt': '#f5f5f5',
+        'border': '#cccccc',
+        'accent': '#2E86AB',
+        'highlight_bg': '#0078d7',
+        'highlight_fg': '#ffffff',
+        'treeview_even': '#f0f0f0',
+        'treeview_odd': '#ffffff',
+        'input_bg': '#ffffff',
+        'input_fg': '#000000',
+        'menu_bg': '#f0f0f0',
+        'menu_fg': '#000000',
+        'statusbar_bg': '#f0f0f0',
+        'statusbar_fg': '#000000',
+        'debug_bg': '#f5f5f5',
+        'debug_fg': '#000000',
+        'debug_header': '#2E86AB',
+        'debug_success': '#28a745',
+        'debug_warning': '#fd7e14',
+        'debug_error': '#dc3545',
+        'debug_info': '#6c757d',
+        'summary_bg': '#ffffff',
+        'summary_fg': '#000000',
+        'listbox_bg': '#ffffff',
+        'listbox_fg': '#000000',
+        'listbox_select_bg': '#0078d7',
+        'listbox_select_fg': '#ffffff',
+        'star_active': '#FFD700',
+        'star_inactive': '#AAAAAA',
+        'star_bg': '#f0f0f0',
+        'tune_table_fg': '#2E86AB',
+        'dir_label_fg': 'gray',
+        'dir_label_active_fg': '#000000',
+        'plot_bg': '#ffffff',
+        'plot_face': '#ffffff',
+        'plot_text': '#000000',
+        'plot_grid': '#cccccc',
+        'plot_spine': '#cccccc',
+        'plot_tick': '#000000',
+        'canvas_bg': '#ffffff',
+    }
+    
+    DARK_THEME = {
+        'bg': '#1e1e1e',
+        'fg': '#d4d4d4',
+        'surface': '#252526',
+        'surface_alt': '#2d2d2d',
+        'border': '#3c3c3c',
+        'accent': '#4fc3f7',
+        'highlight_bg': '#264f78',
+        'highlight_fg': '#ffffff',
+        'treeview_even': '#1e1e1e',
+        'treeview_odd': '#252526',
+        'input_bg': '#3c3c3c',
+        'input_fg': '#d4d4d4',
+        'menu_bg': '#252526',
+        'menu_fg': '#d4d4d4',
+        'statusbar_bg': '#007acc',
+        'statusbar_fg': '#ffffff',
+        'debug_bg': '#1e1e1e',
+        'debug_fg': '#d4d4d4',
+        'debug_header': '#4fc3f7',
+        'debug_success': '#4ec9b0',
+        'debug_warning': '#dcdcaa',
+        'debug_error': '#f44747',
+        'debug_info': '#808080',
+        'summary_bg': '#1e1e1e',
+        'summary_fg': '#d4d4d4',
+        'listbox_bg': '#252526',
+        'listbox_fg': '#d4d4d4',
+        'listbox_select_bg': '#264f78',
+        'listbox_select_fg': '#ffffff',
+        'star_active': '#FFD700',
+        'star_inactive': '#666666',
+        'star_bg': '#1e1e1e',
+        'tune_table_fg': '#4fc3f7',
+        'dir_label_fg': '#808080',
+        'dir_label_active_fg': '#d4d4d4',
+        'plot_bg': '#1e1e1e',
+        'plot_face': '#252526',
+        'plot_text': '#d4d4d4',
+        'plot_grid': '#3c3c3c',
+        'plot_spine': '#3c3c3c',
+        'plot_tick': '#d4d4d4',
+        'canvas_bg': '#1e1e1e',
+    }
+    
     def __init__(self) -> None:
         super().__init__()
         
@@ -361,6 +569,12 @@ class LogViewerApp(tk.Tk):
         self.current_directory: str = None
         self.file_info: dict = {}  # Maps filename to {records: int, size_mb: float}
         
+        # MSQ tune data
+        self.msq_data: Optional[Dict[str, Any]] = None
+        self.msq_file: Optional[str] = None
+        self._tune_sort_column: Optional[str] = None
+        self._tune_sort_reverse: bool = False
+        
         # Sort state
         self._sort_column: str = None
         self._sort_reverse: bool = False
@@ -368,6 +582,14 @@ class LogViewerApp(tk.Tk):
         # Favorites
         self.favorite_channels: set = set()
         self.favorites_filter_active: bool = False
+        
+        # Launch filter
+        self.launch_filter_active: bool = False
+        
+        # Plot state tracking for re-plotting on filter toggle
+        self._plot_state: dict = {}  # {subplot_idx: {'channels': [...], 'single': bool}}
+        self._saved_plot_selections: dict = {}  # Loaded from settings
+        self.normalize_active: bool = False
         
         # Load saved settings (restores last_directory and favorites)
         self._load_settings()
@@ -381,6 +603,7 @@ class LogViewerApp(tk.Tk):
         # Bind keyboard shortcuts
         self.bind("<Control-o>", lambda e: self.open_file())
         self.bind("<Control-e>", lambda e: self.export_csv())
+        self.bind("<Control-t>", lambda e: self.open_msq_file())
         
         # Restore last folder after UI is ready
         self.after(100, self._restore_last_folder)
@@ -404,6 +627,12 @@ class LogViewerApp(tk.Tk):
             accelerator="Ctrl+E"
         )
         file_menu.add_separator()
+        file_menu.add_command(
+            label="Open Tune File...",
+            command=self.open_msq_file,
+            accelerator="Ctrl+T"
+        )
+        file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.quit)
         
         # View menu
@@ -412,7 +641,15 @@ class LogViewerApp(tk.Tk):
         view_menu.add_command(label="Data Grid", command=lambda: self.notebook.select(0))
         view_menu.add_command(label="Visualization", command=lambda: self.notebook.select(1))
         view_menu.add_command(label="Summary", command=lambda: self.notebook.select(2))
-        view_menu.add_command(label="Debug", command=lambda: self.notebook.select(3))
+        view_menu.add_command(label="Tune", command=lambda: self.notebook.select(3))
+        view_menu.add_command(label="Debug", command=lambda: self.notebook.select(4))
+        view_menu.add_separator()
+        view_menu.add_command(
+            label="Toggle Dark Mode",
+            command=self.toggle_dark_mode,
+            accelerator="Ctrl+D"
+        )
+        self._view_menu = view_menu
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -552,6 +789,10 @@ class LogViewerApp(tk.Tk):
         self.notebook.add(self.plot_tab, text="Visualization")
         self.notebook.add(self.summary_tab, text="Summary")
         
+        # Tune tab
+        self.tune_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.tune_tab, text="Tune")
+        
         # Debug tab
         self.debug_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.debug_tab, text="Debug")
@@ -565,7 +806,10 @@ class LogViewerApp(tk.Tk):
         # Create summary view in third tab
         self.create_summary_view()
         
-        # Create debug view in fourth tab
+        # Create tune view in fourth tab
+        self.create_tune_view()
+        
+        # Create debug view in fifth tab
         self.create_debug_view()
     
     def create_data_grid(self):
@@ -666,9 +910,10 @@ class LogViewerApp(tk.Tk):
             tags = ('evenrow',) if idx % 2 == 0 else ('oddrow',)
             self.data_tree.insert("", tk.END, text=str(idx + 1), values=values, tags=tags)
         
-        # Configure row colors
-        self.data_tree.tag_configure('evenrow', background='#f0f0f0')
-        self.data_tree.tag_configure('oddrow', background='#ffffff')
+        # Configure row colors from theme
+        t = self._get_theme()
+        self.data_tree.tag_configure('evenrow', background=t['treeview_even'])
+        self.data_tree.tag_configure('oddrow', background=t['treeview_odd'])
         
         # Update page label with sort indicator
         total_pages = (self.log_data.record_count + self.page_size - 1) // self.page_size
@@ -812,16 +1057,20 @@ class LogViewerApp(tk.Tk):
         # Right panel: Plot area with 2x2 subplot grid
         plot_frame = ttk.Frame(plot_paned)
         
-        # Create matplotlib figure with 4 subplots
-        self.fig = Figure(figsize=(10, 8), dpi=100)
+        # Create matplotlib figure with 4 stacked subplots
+        t = self._get_theme()
+        self.fig = Figure(figsize=(14, 16), dpi=150, facecolor=t['plot_face'])
         self.axes = []
         for i in range(4):
-            ax = self.fig.add_subplot(2, 2, i + 1)
-            ax.set_title(f"Plot {i + 1}", fontsize=10)
-            ax.set_xlabel("Time (s)", fontsize=8)
-            ax.set_ylabel("Value", fontsize=8)
-            ax.grid(True, alpha=0.3)
-            ax.tick_params(labelsize=7)
+            ax = self.fig.add_subplot(4, 1, i + 1)
+            ax.set_facecolor(t['plot_bg'])
+            ax.set_title(f"Plot {i + 1}", fontsize=10, color=t['plot_text'])
+            ax.set_xlabel("Time (s)", fontsize=8, color=t['plot_text'])
+            ax.set_ylabel("Value", fontsize=8, color=t['plot_text'])
+            ax.tick_params(colors=t['plot_tick'], labelsize=7)
+            ax.grid(True, alpha=0.3, color=t['plot_grid'])
+            for spine in ax.spines.values():
+                spine.set_color(t['plot_spine'])
             self.axes.append(ax)
         self.fig.tight_layout(pad=2.0)
         
@@ -834,6 +1083,40 @@ class LogViewerApp(tk.Tk):
         self.toolbar_mpl = NavigationToolbar2Tk(self.canvas, toolbar_row, pack_toolbar=False)
         self.toolbar_mpl.update()
         self.toolbar_mpl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Launch filter toggle button
+        self.launch_filter_var = tk.BooleanVar(value=False)
+        self.launch_filter_btn = ttk.Checkbutton(
+            toolbar_row, text="Launch Only",
+            variable=self.launch_filter_var,
+            command=self.toggle_launch_filter,
+            style='Toolbutton'
+        )
+        self.launch_filter_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Launch cutoff seconds combobox
+        self.launch_cutoff_var = tk.StringVar(value='12')
+        self.launch_cutoff_combo = ttk.Combobox(
+            toolbar_row,
+            textvariable=self.launch_cutoff_var,
+            values=[str(s) for s in range(1, 31)],
+            width=3,
+            state='readonly'
+        )
+        self.launch_cutoff_combo.pack(side=tk.RIGHT, padx=(0, 2))
+        self.launch_cutoff_combo.bind('<<ComboboxSelected>>', lambda e: self._on_launch_cutoff_changed())
+        ttk.Label(toolbar_row, text='Cutoff:').pack(side=tk.RIGHT, padx=(5, 0))
+        
+        # Normalize Y-axis toggle button
+        self.normalize_var = tk.BooleanVar(value=False)
+        self.normalize_btn = ttk.Checkbutton(
+            toolbar_row, text="Normalize Y",
+            variable=self.normalize_var,
+            command=self.toggle_normalize,
+            style='Toolbutton'
+        )
+        self.normalize_btn.pack(side=tk.RIGHT, padx=5)
+        
         ttk.Button(toolbar_row, text="Clear All Plots",
                    command=self.clear_all_plots).pack(side=tk.RIGHT, padx=5)
         
@@ -870,10 +1153,12 @@ class LogViewerApp(tk.Tk):
             
             # Favorite star indicator (clickable)
             is_fav = channel in self.favorite_channels
+            t = self._get_theme()
             star_label = tk.Label(
                 row_frame,
                 text="\u2605" if is_fav else "\u2606",
-                fg="#FFD700" if is_fav else "#AAAAAA",
+                fg=t['star_active'] if is_fav else t['star_inactive'],
+                bg=t['star_bg'],
                 cursor="hand2", font=('', 10)
             )
             star_label.pack(side=tk.LEFT, padx=(0, 2))
@@ -907,9 +1192,10 @@ class LogViewerApp(tk.Tk):
         if channel in self._channel_fav_labels:
             lbl = self._channel_fav_labels[channel]
             is_fav = channel in self.favorite_channels
+            t = self._get_theme()
             lbl.config(
                 text="\u2605" if is_fav else "\u2606",
-                fg="#FFD700" if is_fav else "#AAAAAA"
+                fg=t['star_active'] if is_fav else t['star_inactive']
             )
         
         self._save_settings()
@@ -935,30 +1221,160 @@ class LogViewerApp(tk.Tk):
         self.favorites_filter_active = self.fav_filter_var.get()
         self.populate_channel_checkboxes()
     
+    def toggle_launch_filter(self):
+        """Toggle the launch timer filter on/off and replot."""
+        self.launch_filter_active = self.launch_filter_var.get()
+        self._replot_all()
+    
+    def toggle_normalize(self):
+        """Toggle normalized Y axes on/off and replot."""
+        self.normalize_active = self.normalize_var.get()
+        self._replot_all()
+    
+    def _normalize_data(self, data: List[float]) -> List[float]:
+        """Normalize data to 0-1 range using min-max scaling."""
+        if not data:
+            return data
+        min_val = min(data)
+        max_val = max(data)
+        range_val = max_val - min_val
+        if range_val == 0:
+            return [0.5] * len(data)
+        return [(v - min_val) / range_val for v in data]
+    
+    def _replot_all(self):
+        """Re-plot all subplots using stored plot state."""
+        if not self.log_data or not self._plot_state:
+            return
+        
+        for subplot_idx, state in self._plot_state.items():
+            channels = state.get('channels', [])
+            single = state.get('single', False)
+            if not channels:
+                continue
+            
+            if single:
+                self._do_plot_single(subplot_idx, channels[0])
+            else:
+                self._do_plot_multi(subplot_idx, channels)
+    
+    def _restore_plot_selections(self) -> None:
+        """Restore saved plot selections after loading a log file."""
+        if not self._saved_plot_selections or not self.log_data:
+            return
+        
+        available_channels = set(self.log_data.get_channel_names())
+        
+        for idx_str, state in self._saved_plot_selections.items():
+            try:
+                subplot_idx = int(idx_str)
+            except (ValueError, TypeError):
+                continue
+            
+            if subplot_idx < 0 or subplot_idx >= len(self.axes):
+                continue
+            
+            channels = state.get('channels', [])
+            single = state.get('single', False)
+            
+            # Only restore channels that exist in the current log
+            valid_channels = [c for c in channels if c in available_channels]
+            if not valid_channels:
+                continue
+            
+            self._plot_state[subplot_idx] = {
+                'channels': valid_channels,
+                'single': single and len(valid_channels) == 1
+            }
+            
+            if self._plot_state[subplot_idx]['single']:
+                self._do_plot_single(subplot_idx, valid_channels[0])
+            else:
+                self._do_plot_multi(subplot_idx, valid_channels)
+    
+    @property
+    def launch_timer_cutoff(self) -> float:
+        """Return current launch timer cutoff in seconds from the combobox."""
+        try:
+            return float(self.launch_cutoff_var.get())
+        except (ValueError, AttributeError):
+            return 12.0
+    
+    def _on_launch_cutoff_changed(self) -> None:
+        """Handle launch cutoff combobox change."""
+        if self.launch_filter_active:
+            self._replot_all()
+    
+    def _get_launch_filter_mask(self) -> List[bool]:
+        """Return a boolean mask where True means Launch timer is increasing
+        and below the cutoff threshold.
+        
+        Includes the start point of each increasing segment so the full
+        rising portion is visible. Excludes any points where the launch
+        timer exceeds the selected cutoff seconds.
+        """
+        if not self.log_data:
+            return []
+        
+        # Channel name as discovered in the MLG data
+        launch_channel = 'Launch timer'
+        launch_data = self.log_data.get_channel_data(launch_channel)
+        
+        if not launch_data or all(v == 0 for v in launch_data):
+            return [True] * self.log_data.record_count
+        
+        mask = [False] * len(launch_data)
+        cutoff = self.launch_timer_cutoff
+        for i in range(1, len(launch_data)):
+            if launch_data[i] > launch_data[i - 1] and launch_data[i] <= cutoff:
+                mask[i] = True
+                # Also include the start of this increasing segment
+                if not mask[i - 1] and launch_data[i - 1] <= cutoff:
+                    mask[i - 1] = True
+        return mask
+    
+    def _apply_filter(self, data: List[float], mask: List[bool]) -> Tuple[List[float], List[int]]:
+        """Apply boolean mask to data, returning filtered values and their indices."""
+        filtered = []
+        indices = []
+        for i, (val, keep) in enumerate(zip(data, mask)):
+            if keep:
+                filtered.append(val)
+                indices.append(i)
+        return filtered, indices
+    
     def clear_target_plot(self):
         """Clear the currently targeted subplot."""
         target_idx = self.plot_target_combo.current()
         if target_idx < 0:
             target_idx = 0
+        t = self._get_theme()
         ax = self.axes[target_idx]
         ax.clear()
-        ax.set_title(f"Plot {target_idx + 1}", fontsize=10)
-        ax.set_xlabel("Time (s)", fontsize=8)
-        ax.set_ylabel("Value", fontsize=8)
-        ax.grid(True, alpha=0.3)
-        ax.tick_params(labelsize=7)
+        ax.set_facecolor(t['plot_bg'])
+        ax.set_title(f"Plot {target_idx + 1}", fontsize=10, color=t['plot_text'])
+        ax.set_xlabel("Time (s)", fontsize=8, color=t['plot_text'])
+        ax.set_ylabel("Value", fontsize=8, color=t['plot_text'])
+        ax.tick_params(colors=t['plot_tick'], labelsize=7)
+        ax.grid(True, alpha=0.3, color=t['plot_grid'])
+        for spine in ax.spines.values():
+            spine.set_color(t['plot_spine'])
         self.fig.tight_layout(pad=2.0)
         self.canvas.draw()
     
     def clear_all_plots(self):
         """Clear all 4 subplots."""
+        t = self._get_theme()
         for i, ax in enumerate(self.axes):
             ax.clear()
-            ax.set_title(f"Plot {i + 1}", fontsize=10)
-            ax.set_xlabel("Time (s)", fontsize=8)
-            ax.set_ylabel("Value", fontsize=8)
-            ax.grid(True, alpha=0.3)
-            ax.tick_params(labelsize=7)
+            ax.set_facecolor(t['plot_bg'])
+            ax.set_title(f"Plot {i + 1}", fontsize=10, color=t['plot_text'])
+            ax.set_xlabel("Time (s)", fontsize=8, color=t['plot_text'])
+            ax.set_ylabel("Value", fontsize=8, color=t['plot_text'])
+            ax.tick_params(colors=t['plot_tick'], labelsize=7)
+            ax.grid(True, alpha=0.3, color=t['plot_grid'])
+            for spine in ax.spines.values():
+                spine.set_color(t['plot_spine'])
         self.fig.tight_layout(pad=2.0)
         self.canvas.draw()
     
@@ -983,54 +1399,91 @@ class LogViewerApp(tk.Tk):
             target_idx = self.plot_target_combo.current()
             if target_idx < 0:
                 target_idx = 0
-            ax = self.axes[target_idx]
             
-            # Get time data
-            time_data = self.log_data.get_time_data()
+            # Store plot state for re-plotting
+            self._plot_state[target_idx] = {
+                'channels': list(selected_channels),
+                'single': False
+            }
             
-            # Clear target subplot
-            ax.clear()
-            ax.set_xlabel("Time (s)", fontsize=8)
-            ax.set_ylabel("Value", fontsize=8)
-            ax.grid(True, alpha=0.3)
-            ax.tick_params(labelsize=7)
-            
-            # Color palette for multiple lines
-            colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#6A994E', 
-                      '#BC4B51', '#8675A9', '#C9ADA7', '#9A8C98', '#4A4E69']
-            
-            # Plot each selected channel
-            for idx, channel in enumerate(selected_channels):
-                channel_data = self.log_data.get_channel_data(channel)
-                color = colors[idx % len(colors)]
-                ax.plot(time_data, channel_data, linewidth=1.2, label=channel, color=color)
-            
-            # Add legend if multiple channels
-            if len(selected_channels) > 1:
-                ax.legend(loc='best', fontsize=7, framealpha=0.9)
-                ax.set_title(
-                    f"Plot {target_idx + 1}: {len(selected_channels)} channels",
-                    fontsize=10, fontweight='bold'
-                )
-            else:
-                # Single channel - show units in ylabel
-                channel = selected_channels[0]
-                field_info = self.log_data.get_field_info(channel)
-                ylabel = channel
-                if field_info and field_info.get('units'):
-                    ylabel += f" ({field_info['units']})"
-                ax.set_ylabel(ylabel, fontsize=8)
-                ax.set_title(
-                    f"Plot {target_idx + 1}: {channel}",
-                    fontsize=10, fontweight='bold'
-                )
-            
-            # Refresh canvas
-            self.fig.tight_layout(pad=2.0)
-            self.canvas.draw()
+            self._do_plot_multi(target_idx, selected_channels)
+            self._save_settings()
             
         except Exception as e:
             messagebox.showerror("Plot Error", f"Error creating plot:\n{str(e)}")
+    
+    def _do_plot_multi(self, target_idx: int, selected_channels: List[str]):
+        """Internal: plot multiple channels on a subplot."""
+        t = self._get_theme()
+        ax = self.axes[target_idx]
+        
+        # Get time data
+        time_data = self.log_data.get_time_data()
+        
+        # Apply launch filter if active
+        mask = None
+        if self.launch_filter_active:
+            mask = self._get_launch_filter_mask()
+            time_data, _ = self._apply_filter(time_data, mask)
+        
+        # Clear target subplot
+        ax.clear()
+        ax.set_facecolor(t['plot_bg'])
+        ax.set_xlabel("Time (s)", fontsize=8, color=t['plot_text'])
+        if self.normalize_active and len(selected_channels) > 1:
+            ax.set_ylabel("Normalized (0-1)", fontsize=8, color=t['plot_text'])
+        else:
+            ax.set_ylabel("Value", fontsize=8, color=t['plot_text'])
+        ax.tick_params(colors=t['plot_tick'], labelsize=7)
+        ax.grid(True, alpha=0.3, color=t['plot_grid'])
+        for spine in ax.spines.values():
+            spine.set_color(t['plot_spine'])
+        
+        # Color palette for multiple lines
+        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#6A994E', 
+                  '#BC4B51', '#8675A9', '#C9ADA7', '#9A8C98', '#4A4E69']
+        
+        # Plot each selected channel
+        for idx, channel in enumerate(selected_channels):
+            channel_data = self.log_data.get_channel_data(channel)
+            if self.launch_filter_active and mask:
+                channel_data, _ = self._apply_filter(channel_data, mask)
+            
+            # Normalize if active and multiple channels
+            plot_data = channel_data
+            if self.normalize_active and len(selected_channels) > 1:
+                plot_data = self._normalize_data(channel_data)
+            
+            color = colors[idx % len(colors)]
+            ax.plot(time_data, plot_data, linewidth=1.2, label=channel, color=color)
+        
+        # Add legend if multiple channels
+        if len(selected_channels) > 1:
+            legend = ax.legend(loc='best', fontsize=7, framealpha=0.9,
+                               facecolor=t['plot_face'], edgecolor=t['plot_spine'])
+            if legend:
+                for text in legend.get_texts():
+                    text.set_color(t['plot_text'])
+            ax.set_title(
+                f"Plot {target_idx + 1}: {len(selected_channels)} channels",
+                fontsize=10, fontweight='bold', color=t['plot_text']
+            )
+        else:
+            # Single channel - show units in ylabel
+            channel = selected_channels[0]
+            field_info = self.log_data.get_field_info(channel)
+            ylabel = channel
+            if field_info and field_info.get('units'):
+                ylabel += f" ({field_info['units']})"
+            ax.set_ylabel(ylabel, fontsize=8, color=t['plot_text'])
+            ax.set_title(
+                f"Plot {target_idx + 1}: {channel}",
+                fontsize=10, fontweight='bold', color=t['plot_text']
+            )
+        
+        # Refresh canvas
+        self.fig.tight_layout(pad=2.0)
+        self.canvas.draw()
     
     def plot_selected_channel(self):
         """Plot the channel selected in toolbar dropdown to the target subplot."""
@@ -1052,33 +1505,55 @@ class LogViewerApp(tk.Tk):
                 target_idx = self.plot_target_combo.current()
                 if target_idx < 0:
                     target_idx = 0
-            ax = self.axes[target_idx]
             
-            time_data = self.log_data.get_time_data()
-            channel_data = self.log_data.get_channel_data(channel_name)
+            # Store plot state for re-plotting
+            self._plot_state[target_idx] = {
+                'channels': [channel_name],
+                'single': True
+            }
             
-            ax.clear()
-            ax.set_xlabel("Time (s)", fontsize=8)
-            ax.grid(True, alpha=0.3)
-            ax.tick_params(labelsize=7)
-            
-            field_info = self.log_data.get_field_info(channel_name)
-            ylabel = channel_name
-            if field_info and field_info.get('units'):
-                ylabel += f" ({field_info['units']})"
-            ax.set_ylabel(ylabel, fontsize=8)
-            ax.set_title(
-                f"Plot {target_idx + 1}: {channel_name}",
-                fontsize=10, fontweight='bold'
-            )
-            
-            ax.plot(time_data, channel_data, linewidth=1.2, color='#2E86AB')
-            
-            self.fig.tight_layout(pad=2.0)
-            self.canvas.draw()
+            self._do_plot_single(target_idx, channel_name)
+            self._save_settings()
             
         except Exception as e:
             messagebox.showerror("Plot Error", f"Error creating plot:\n{str(e)}")
+    
+    def _do_plot_single(self, target_idx: int, channel_name: str):
+        """Internal: plot a single channel on a subplot."""
+        t = self._get_theme()
+        ax = self.axes[target_idx]
+        
+        time_data = self.log_data.get_time_data()
+        channel_data = self.log_data.get_channel_data(channel_name)
+        
+        # Apply launch filter if active
+        if self.launch_filter_active:
+            mask = self._get_launch_filter_mask()
+            time_data, _ = self._apply_filter(time_data, mask)
+            channel_data, _ = self._apply_filter(channel_data, mask)
+        
+        ax.clear()
+        ax.set_facecolor(t['plot_bg'])
+        ax.set_xlabel("Time (s)", fontsize=8, color=t['plot_text'])
+        ax.tick_params(colors=t['plot_tick'], labelsize=7)
+        ax.grid(True, alpha=0.3, color=t['plot_grid'])
+        for spine in ax.spines.values():
+            spine.set_color(t['plot_spine'])
+        
+        field_info = self.log_data.get_field_info(channel_name)
+        ylabel = channel_name
+        if field_info and field_info.get('units'):
+            ylabel += f" ({field_info['units']})"
+        ax.set_ylabel(ylabel, fontsize=8, color=t['plot_text'])
+        ax.set_title(
+            f"Plot {target_idx + 1}: {channel_name}",
+            fontsize=10, fontweight='bold', color=t['plot_text']
+        )
+        
+        ax.plot(time_data, channel_data, linewidth=1.2, color='#2E86AB')
+        
+        self.fig.tight_layout(pad=2.0)
+        self.canvas.draw()
     
     def create_summary_view(self):
         """Create summary view with text widget."""
@@ -1127,22 +1602,25 @@ class LogViewerApp(tk.Tk):
         scrollbar = ttk.Scrollbar(text_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
+        t = self._get_theme()
         self.debug_text = tk.Text(
             text_frame,
             wrap=tk.WORD,
             yscrollcommand=scrollbar.set,
             font=("Consolas", 9),
-            background="#f5f5f5"
+            background=t['debug_bg'],
+            foreground=t['debug_fg'],
+            insertbackground=t['fg']
         )
         self.debug_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.debug_text.yview)
         
         # Configure text tags for different log levels
-        self.debug_text.tag_configure('header', font=('Consolas', 10, 'bold'), foreground='#2E86AB')
-        self.debug_text.tag_configure('success', foreground='#28a745')
-        self.debug_text.tag_configure('warning', foreground='#fd7e14')
-        self.debug_text.tag_configure('error', foreground='#dc3545')
-        self.debug_text.tag_configure('info', foreground='#6c757d')
+        self.debug_text.tag_configure('header', font=('Consolas', 10, 'bold'), foreground=t['debug_header'])
+        self.debug_text.tag_configure('success', foreground=t['debug_success'])
+        self.debug_text.tag_configure('warning', foreground=t['debug_warning'])
+        self.debug_text.tag_configure('error', foreground=t['debug_error'])
+        self.debug_text.tag_configure('info', foreground=t['debug_info'])
         
         # Initial message
         self.log_debug("Debug log initialized. Load a file to see parsing details.", 'info')
@@ -1488,6 +1966,12 @@ class LogViewerApp(tk.Tk):
                     self.file_listbox.see(i)
                     break
             
+            # Auto-detect and load MSQ tune file from project structure
+            self._auto_detect_msq(file_path)
+            
+            # Restore saved plot selections
+            self._restore_plot_selections()
+            
         except (ValueError, IOError) as e:
             self.log_debug(f"\n✗ PARSING FAILED", 'error')
             self.log_debug(f"Error: {str(e)}", 'error')
@@ -1521,6 +2005,8 @@ class LogViewerApp(tk.Tk):
                     settings = json.load(f)
                 self.current_directory = settings.get('last_directory')
                 self.favorite_channels = set(settings.get('favorites', []))
+                self.dark_mode = settings.get('dark_mode', False)
+                self._saved_plot_selections = settings.get('plot_selections', {})
         except (json.JSONDecodeError, IOError, OSError):
             pass  # Use defaults on error
     
@@ -1530,7 +2016,9 @@ class LogViewerApp(tk.Tk):
         try:
             settings = {
                 'last_directory': self.current_directory,
-                'favorites': sorted(self.favorite_channels)
+                'favorites': sorted(self.favorite_channels),
+                'dark_mode': self.dark_mode,
+                'plot_selections': {str(k): v for k, v in self._plot_state.items()}
             }
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=2)
@@ -1580,6 +2068,543 @@ class LogViewerApp(tk.Tk):
             messagebox.showerror("Export Error", f"Failed to export CSV:\n{str(e)}")
             self.statusbar.config(text="Export failed")
     
+    # --- Tune Tab Methods ---
+    
+    def create_tune_view(self):
+        """Create tune view with search and treeview for MSQ constants."""
+        # Toolbar with search and file controls
+        tune_toolbar = ttk.Frame(self.tune_tab)
+        tune_toolbar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(
+            tune_toolbar,
+            text="Open Tune...",
+            command=self.open_msq_file
+        ).pack(side=tk.LEFT, padx=2)
+        
+        ttk.Button(
+            tune_toolbar,
+            text="Export Tune CSV",
+            command=self.export_tune_csv
+        ).pack(side=tk.LEFT, padx=2)
+        
+        ttk.Separator(tune_toolbar, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, fill=tk.Y, padx=10
+        )
+        
+        # Search controls
+        ttk.Label(tune_toolbar, text="Search:").pack(side=tk.LEFT, padx=(5, 2))
+        self.tune_search_var = tk.StringVar()
+        self.tune_search_var.trace_add('write', self._on_tune_search_changed)
+        self.tune_search_entry = ttk.Entry(
+            tune_toolbar,
+            textvariable=self.tune_search_var,
+            width=30
+        )
+        self.tune_search_entry.pack(side=tk.LEFT, padx=2)
+        
+        ttk.Button(
+            tune_toolbar,
+            text="Clear",
+            command=lambda: self.tune_search_var.set('')
+        ).pack(side=tk.LEFT, padx=2)
+        
+        # Filter by type
+        ttk.Separator(tune_toolbar, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, fill=tk.Y, padx=10
+        )
+        ttk.Label(tune_toolbar, text="Type:").pack(side=tk.LEFT, padx=(5, 2))
+        self.tune_type_var = tk.StringVar(value="All")
+        self.tune_type_combo = ttk.Combobox(
+            tune_toolbar,
+            textvariable=self.tune_type_var,
+            values=["All", "constant", "pcVariable"],
+            width=12,
+            state="readonly"
+        )
+        self.tune_type_combo.pack(side=tk.LEFT, padx=2)
+        self.tune_type_combo.bind('<<ComboboxSelected>>', lambda e: self._apply_tune_filter())
+        
+        # Entry count label
+        self.tune_count_label = ttk.Label(tune_toolbar, text="0 entries", foreground="gray")
+        self.tune_count_label.pack(side=tk.RIGHT, padx=10)
+        
+        # Treeview with scrollbars
+        tree_frame = ttk.Frame(self.tune_tab)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
+        
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        tune_columns = ('page', 'type', 'name', 'value', 'units', 'digits', 'dimensions')
+        self.tune_tree = ttk.Treeview(
+            tree_frame,
+            columns=tune_columns,
+            show='headings',
+            yscrollcommand=vsb.set,
+            xscrollcommand=hsb.set,
+            selectmode='extended'
+        )
+        self.tune_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        vsb.config(command=self.tune_tree.yview)
+        hsb.config(command=self.tune_tree.xview)
+        
+        # Configure columns
+        column_config = {
+            'page': ('Page', 60, 'center'),
+            'type': ('Type', 90, 'w'),
+            'name': ('Name', 250, 'w'),
+            'value': ('Value', 300, 'w'),
+            'units': ('Units', 80, 'center'),
+            'digits': ('Digits', 60, 'center'),
+            'dimensions': ('Dims', 60, 'center'),
+        }
+        
+        for col_id, (heading, width, anchor) in column_config.items():
+            self.tune_tree.column(col_id, width=width, minwidth=40, anchor=anchor)
+            self.tune_tree.heading(
+                col_id,
+                text=heading,
+                command=lambda c=col_id: self._sort_tune_by_column(c)
+            )
+        
+        # Alternating row colors from theme
+        t = self._get_theme()
+        self.tune_tree.tag_configure('evenrow', background=t['treeview_even'])
+        self.tune_tree.tag_configure('oddrow', background=t['treeview_odd'])
+        self.tune_tree.tag_configure('table_row', foreground=t['tune_table_fg'])
+        
+        # Initial message
+        self.tune_tree.insert(
+            '', tk.END, values=('', '', 'No tune file loaded', 'Open a .msq file or load a log from a project folder', '', '', '')
+        )
+    
+    def open_msq_file(self) -> None:
+        """Open file dialog to select and load an MSQ tune file."""
+        initial_dir = self.current_directory or os.path.expanduser('~')
+        
+        # Try to find an MSQ file in parent directory
+        if self.current_directory:
+            parent = os.path.dirname(self.current_directory)
+            if parent:
+                initial_dir = parent
+        
+        file_path = filedialog.askopenfilename(
+            title="Open Tune File",
+            filetypes=[
+                ("MegaSquirt Tune Files", "*.msq"),
+                ("All Files", "*.*")
+            ],
+            initialdir=initial_dir
+        )
+        
+        if file_path:
+            self.load_msq_file(file_path)
+    
+    def load_msq_file(self, file_path: str) -> None:
+        """Load and parse an MSQ tune file."""
+        try:
+            self.statusbar.config(text=f"Loading tune file {os.path.basename(file_path)}...")
+            self.update_idletasks()
+            
+            parser = MSQParser(file_path)
+            self.msq_data = parser.parse()
+            self.msq_file = file_path
+            
+            self.log_debug(f"Loaded tune file: {os.path.basename(file_path)}", 'success')
+            self.log_debug(f"  Entries: {self.msq_data['entry_count']}", 'info')
+            bib = self.msq_data.get('bibliography', {})
+            if bib.get('author'):
+                self.log_debug(f"  Author: {bib['author']}", 'info')
+            if bib.get('writeDate'):
+                self.log_debug(f"  Date: {bib['writeDate']}", 'info')
+            
+            self._populate_tune_tree()
+            
+            self.statusbar.config(
+                text=f"Loaded {self.msq_data['entry_count']} tune entries from {os.path.basename(file_path)}"
+            )
+            
+            # Switch to tune tab
+            self.notebook.select(self.tune_tab)
+            
+        except ET.ParseError as e:
+            messagebox.showerror("XML Parse Error", f"Failed to parse tune file:\n{str(e)}")
+            self.statusbar.config(text="Error loading tune file")
+        except (IOError, OSError) as e:
+            messagebox.showerror("File Error", f"Could not read tune file:\n{str(e)}")
+            self.statusbar.config(text="Error loading tune file")
+        except Exception as e:
+            messagebox.showerror("Error", f"Unexpected error loading tune file:\n{str(e)}")
+            self.statusbar.config(text="Error loading tune file")
+    
+    def _populate_tune_tree(self) -> None:
+        """Populate tune treeview with all entries."""
+        if not self.msq_data:
+            return
+        
+        self._apply_tune_filter()
+    
+    def _apply_tune_filter(self) -> None:
+        """Apply search and type filters to tune treeview."""
+        if not self.msq_data:
+            return
+        
+        # Clear existing items
+        for item in self.tune_tree.get_children():
+            self.tune_tree.delete(item)
+        
+        search_text = self.tune_search_var.get().lower()
+        type_filter = self.tune_type_var.get()
+        
+        filtered = []
+        for entry in self.msq_data['entries']:
+            # Type filter
+            if type_filter != 'All' and entry['type'] != type_filter:
+                continue
+            
+            # Search filter (match name, value, or units)
+            if search_text:
+                searchable = f"{entry['name']} {entry['value']} {entry['units']}".lower()
+                if search_text not in searchable:
+                    continue
+            
+            filtered.append(entry)
+        
+        # Apply current sort if active
+        if self._tune_sort_column:
+            filtered.sort(
+                key=lambda e: e.get(self._tune_sort_column, ''),
+                reverse=self._tune_sort_reverse
+            )
+        
+        # Insert filtered entries
+        for idx, entry in enumerate(filtered):
+            tags = ('evenrow',) if idx % 2 == 0 else ('oddrow',)
+            if entry['dimensions']:
+                tags = tags + ('table_row',)
+            
+            self.tune_tree.insert(
+                '', tk.END,
+                values=(
+                    entry['page'],
+                    entry['type'],
+                    entry['name'],
+                    entry['value'],
+                    entry['units'],
+                    entry['digits'],
+                    entry['dimensions'],
+                ),
+                tags=tags
+            )
+        
+        # Update count label
+        total = self.msq_data['entry_count']
+        shown = len(filtered)
+        if shown == total:
+            self.tune_count_label.config(text=f"{total} entries")
+        else:
+            self.tune_count_label.config(text=f"{shown} of {total} entries")
+    
+    def _on_tune_search_changed(self, *args) -> None:
+        """Handle tune search text changes."""
+        if self.msq_data:
+            self._apply_tune_filter()
+    
+    def _sort_tune_by_column(self, column: str) -> None:
+        """Sort tune treeview by column."""
+        if not self.msq_data:
+            return
+        
+        if self._tune_sort_column == column:
+            self._tune_sort_reverse = not self._tune_sort_reverse
+        else:
+            self._tune_sort_column = column
+            self._tune_sort_reverse = False
+        
+        # Update column headers with sort indicators
+        columns = ('page', 'type', 'name', 'value', 'units', 'digits', 'dimensions')
+        headings = {'page': 'Page', 'type': 'Type', 'name': 'Name', 'value': 'Value',
+                    'units': 'Units', 'digits': 'Digits', 'dimensions': 'Dims'}
+        for col in columns:
+            if col == column:
+                indicator = ' \u25bc' if self._tune_sort_reverse else ' \u25b2'
+                self.tune_tree.heading(col, text=f"{headings[col]}{indicator}")
+            else:
+                self.tune_tree.heading(col, text=headings[col])
+        
+        self._apply_tune_filter()
+    
+    def export_tune_csv(self) -> None:
+        """Export tune data to CSV file."""
+        if not self.msq_data:
+            messagebox.showwarning("No Data", "Please load a tune file first.")
+            return
+        
+        file_path = filedialog.asksaveasfilename(
+            title="Export Tune to CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            with open(file_path, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(
+                    csvfile,
+                    fieldnames=['page', 'type', 'name', 'value', 'units', 'digits', 'dimensions']
+                )
+                writer.writeheader()
+                for entry in self.msq_data['entries']:
+                    writer.writerow(entry)
+            
+            self.statusbar.config(text=f"Exported {self.msq_data['entry_count']} tune entries to CSV")
+            messagebox.showinfo("Export Complete", f"Tune data exported to:\n{file_path}")
+        except (IOError, OSError) as e:
+            messagebox.showerror("Export Error", f"Failed to export tune CSV:\n{str(e)}")
+    
+    def _auto_detect_msq(self, log_file_path: str) -> None:
+        """Auto-detect and load MSQ file from project directory structure."""
+        # Walk up from the log file's directory to find an MSQ file
+        log_dir = os.path.dirname(log_file_path)
+        
+        # Check parent directory (MyCar/DataLogs -> MyCar/CurrentTune.msq)
+        parent_dir = os.path.dirname(log_dir)
+        if parent_dir:
+            for f in os.listdir(parent_dir):
+                if f.lower().endswith('.msq'):
+                    msq_path = os.path.join(parent_dir, f)
+                    if msq_path != self.msq_file:
+                        self.load_msq_file(msq_path)
+                    return
+        
+        # Check same directory
+        for f in os.listdir(log_dir):
+            if f.lower().endswith('.msq'):
+                msq_path = os.path.join(log_dir, f)
+                if msq_path != self.msq_file:
+                    self.load_msq_file(msq_path)
+                return
+    
+    # --- Theme Methods ---
+    
+    def _get_theme(self) -> Dict[str, str]:
+        """Return current theme color palette."""
+        return LogViewerApp.DARK_THEME if self.dark_mode else LogViewerApp.LIGHT_THEME
+    
+    def toggle_dark_mode(self) -> None:
+        """Toggle between light and dark mode."""
+        self.dark_mode = not self.dark_mode
+        self._apply_theme()
+        self._save_settings()
+    
+    def _apply_theme(self) -> None:
+        """Apply current theme colors to all widgets."""
+        t = self._get_theme()
+        
+        # Root window
+        self.configure(bg=t['bg'])
+        
+        # ttk style configuration
+        style = ttk.Style(self)
+        
+        # Frame backgrounds
+        style.configure('TFrame', background=t['bg'])
+        style.configure('TLabel', background=t['bg'], foreground=t['fg'])
+        style.configure('TButton', background=t['surface'], foreground=t['fg'])
+        style.configure('TCheckbutton', background=t['bg'], foreground=t['fg'])
+        style.configure('Toolbutton', background=t['bg'], foreground=t['fg'])
+        
+        # Notebook (tabs)
+        style.configure('TNotebook', background=t['bg'])
+        style.configure('TNotebook.Tab', background=t['surface'],
+                        foreground=t['fg'], padding=[8, 4])
+        style.map('TNotebook.Tab',
+                  background=[('selected', t['accent']), ('active', t['highlight_bg'])],
+                  foreground=[('selected', t['highlight_fg']), ('active', t['highlight_fg'])])
+        
+        # Treeview
+        style.configure('Treeview',
+                        background=t['surface'],
+                        foreground=t['fg'],
+                        fieldbackground=t['surface'],
+                        bordercolor=t['border'],
+                        lightcolor=t['border'],
+                        darkcolor=t['border'])
+        style.configure('Treeview.Heading',
+                        background=t['surface_alt'],
+                        foreground=t['fg'],
+                        bordercolor=t['border'])
+        style.map('Treeview',
+                  background=[('selected', t['highlight_bg'])],
+                  foreground=[('selected', t['highlight_fg'])])
+        style.map('Treeview.Heading',
+                  background=[('active', t['border'])])
+        
+        # Combobox
+        style.configure('TCombobox',
+                        fieldbackground=t['input_bg'],
+                        foreground=t['input_fg'],
+                        background=t['surface'],
+                        selectbackground=t['highlight_bg'],
+                        selectforeground=t['highlight_fg'])
+        style.map('TCombobox',
+                  fieldbackground=[('readonly', t['input_bg'])],
+                  foreground=[('readonly', t['input_fg'])])
+        
+        # Entry
+        style.configure('TEntry',
+                        fieldbackground=t['input_bg'],
+                        foreground=t['input_fg'])
+        
+        # Separator
+        style.configure('TSeparator', background=t['border'])
+        
+        # PanedWindow
+        style.configure('TPanedwindow', background=t['bg'])
+        
+        # Scrollbar
+        style.configure('TScrollbar',
+                        background=t['surface_alt'],
+                        troughcolor=t['bg'],
+                        bordercolor=t['border'])
+        
+        # Menu colors
+        self._apply_menu_theme(self['menu'], t)
+        
+        # Statusbar
+        if hasattr(self, 'statusbar'):
+            self.statusbar.configure(
+                background=t['statusbar_bg'],
+                foreground=t['statusbar_fg']
+            )
+        
+        # File browser listbox
+        if hasattr(self, 'file_listbox'):
+            self.file_listbox.configure(
+                bg=t['listbox_bg'],
+                fg=t['listbox_fg'],
+                selectbackground=t['listbox_select_bg'],
+                selectforeground=t['listbox_select_fg'],
+                highlightbackground=t['border'],
+                highlightcolor=t['accent']
+            )
+        
+        # Directory label
+        if hasattr(self, 'dir_label'):
+            self.dir_label.configure(foreground=t['dir_label_fg'])
+        
+        # File count label
+        if hasattr(self, 'file_count_label'):
+            self.file_count_label.configure(foreground=t['dir_label_fg'])
+        
+        # Channel canvas
+        if hasattr(self, 'channel_canvas'):
+            self.channel_canvas.configure(bg=t['bg'], highlightbackground=t['border'])
+        
+        # Update star labels in channel checkboxes
+        if hasattr(self, '_channel_fav_labels'):
+            for channel, lbl in self._channel_fav_labels.items():
+                is_fav = channel in self.favorite_channels
+                lbl.configure(
+                    bg=t['star_bg'],
+                    fg=t['star_active'] if is_fav else t['star_inactive']
+                )
+        
+        # Summary text widget
+        if hasattr(self, 'summary_text'):
+            self.summary_text.configure(
+                bg=t['summary_bg'],
+                fg=t['summary_fg'],
+                insertbackground=t['fg']
+            )
+        
+        # Debug text widget
+        if hasattr(self, 'debug_text'):
+            self.debug_text.configure(
+                bg=t['debug_bg'],
+                fg=t['debug_fg'],
+                insertbackground=t['fg']
+            )
+            self.debug_text.tag_configure('header', foreground=t['debug_header'])
+            self.debug_text.tag_configure('success', foreground=t['debug_success'])
+            self.debug_text.tag_configure('warning', foreground=t['debug_warning'])
+            self.debug_text.tag_configure('error', foreground=t['debug_error'])
+            self.debug_text.tag_configure('info', foreground=t['debug_info'])
+        
+        # Data grid row colors
+        if hasattr(self, 'data_tree'):
+            self.data_tree.tag_configure('evenrow', background=t['treeview_even'])
+            self.data_tree.tag_configure('oddrow', background=t['treeview_odd'])
+        
+        # Tune tree row colors
+        if hasattr(self, 'tune_tree'):
+            self.tune_tree.tag_configure('evenrow', background=t['treeview_even'])
+            self.tune_tree.tag_configure('oddrow', background=t['treeview_odd'])
+            self.tune_tree.tag_configure('table_row', foreground=t['tune_table_fg'])
+        
+        # Tune count label
+        if hasattr(self, 'tune_count_label'):
+            self.tune_count_label.configure(foreground=t['dir_label_fg'])
+        
+        # Matplotlib figure
+        if hasattr(self, 'fig'):
+            self._apply_plot_theme()
+        
+        # Update page label
+        if hasattr(self, 'page_label'):
+            self.page_label.configure(background=t['bg'], foreground=t['fg'])
+    
+    def _apply_menu_theme(self, menu_path: str, t: Dict[str, str]) -> None:
+        """Apply theme to menus recursively."""
+        try:
+            menu_widget = self.nametowidget(menu_path)
+            if isinstance(menu_widget, tk.Menu):
+                menu_widget.configure(
+                    bg=t['menu_bg'],
+                    fg=t['menu_fg'],
+                    activebackground=t['highlight_bg'],
+                    activeforeground=t['highlight_fg'],
+                    selectcolor=t['accent']
+                )
+                # Apply to submenus
+                last = menu_widget.index(tk.END)
+                if last is not None:
+                    for i in range(last + 1):
+                        try:
+                            submenu = menu_widget.entrycget(i, 'menu')
+                            if submenu:
+                                self._apply_menu_theme(submenu, t)
+                        except tk.TclError:
+                            continue
+        except (tk.TclError, KeyError):
+            pass
+    
+    def _apply_plot_theme(self) -> None:
+        """Apply current theme to matplotlib figure and axes."""
+        t = self._get_theme()
+        
+        self.fig.set_facecolor(t['plot_face'])
+        
+        for ax in self.axes:
+            ax.set_facecolor(t['plot_bg'])
+            ax.tick_params(colors=t['plot_tick'], labelsize=7)
+            ax.xaxis.label.set_color(t['plot_text'])
+            ax.yaxis.label.set_color(t['plot_text'])
+            ax.title.set_color(t['plot_text'])
+            for spine in ax.spines.values():
+                spine.set_color(t['plot_spine'])
+            ax.grid(True, alpha=0.3, color=t['plot_grid'])
+        
+        self.fig.tight_layout(pad=2.0)
+        self.canvas.draw()
+    
     def show_about(self) -> None:
         """Show about dialog."""
         messagebox.showinfo(
@@ -1593,6 +2618,7 @@ class LogViewerApp(tk.Tk):
             "\u2022 View log data in tabular format\n"
             "\u2022 Plot channels over time\n"
             "\u2022 Export data to CSV\n"
+            "\u2022 View MSQ tune file constants\n"
             "\u2022 Sort columns by clicking headers\n\n"
             "Built with tkinter and matplotlib"
         )
