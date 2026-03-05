@@ -1,8 +1,19 @@
 {
-  "last_directory": "C:/Workspaces/LogViewer/MyCar/DataLogs",
+  "last_directory": "C:/Users/Mark/Desktop/MyCar/DataLogs",
+  "last_file": "C:/Users/Mark/Desktop/MyCar/DataLogs\\2024-02-25_15.25.13.mlg",
   "favorites": [
     "MAP",
     "RPM",
     "Time"
-  ]
+  ],
+  "dark_mode": true,
+  "accent_color": "Green",
+  "recent_files": [
+    "C:/Users/Mark/Desktop/MyCar/DataLogs\\2024-02-25_15.25.13.mlg",
+    "C:/Users/Mark/Desktop/MyCar/DataLogs\\2024-02-25_17.52.37.mlg",
+    "C:/Users/Mark/Desktop/MyCar/DataLogs\\2024-02-25_16.03.17.mlg",
+    "C:/Users/Mark/Desktop/MyCar/DataLogs\\2024-02-25_16.31.48.mlg"
+  ],
+  "sidebar_collapsed": false,
+  "sidebar_width": 250
 }

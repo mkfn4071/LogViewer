@@ -8,6 +8,10 @@
 # Used for: FigureCanvasTkAgg, NavigationToolbar2Tk, Figure
 matplotlib>=3.5.0
 
+# Scientific computing library for interpolation and smoothing
+# Used for: AFR target table interpolation, VE table smoothing
+scipy>=1.7.0
+
 # Note: tkinter is included with Python standard library
 # If tkinter is missing, install with:
 #   - Ubuntu/Debian: sudo apt-get install python3-tk

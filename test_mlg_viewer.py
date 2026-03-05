@@ -248,6 +248,183 @@ class TestMLGParser(unittest.TestCase):
         self.assertEqual(parser.offset, 0)
         self.assertEqual(parser.file_path, 'test.mlg')
 
+    def _build_multi_record_parser(self, num_records):
+        """Helper: build a parser with N U08 data records for callback tests."""
+        header_data = self.create_valid_header()
+        field1 = self.create_field_definition(field_type=0, name="Val")
+
+        # Each record: 4-byte header + 1-byte U08 data + 1-byte CRC = 6 bytes
+        data_blocks = b''
+        for i in range(num_records):
+            data_blocks += struct.pack('>B', 0)        # block type
+            data_blocks += struct.pack('>B', i % 256)  # counter
+            data_blocks += struct.pack('>H', i)        # timestamp
+            data_blocks += struct.pack('>B', i % 256)  # value
+            data_blocks += struct.pack('>B', 0)        # CRC
+
+        file_data = header_data + field1 + data_blocks
+
+        parser = MLGParser.__new__(MLGParser)
+        parser.data = bytearray(file_data)
+        parser.offset = 0
+
+        header = parser.parse_header()
+        header['data_begin_index'] = len(header_data) + len(field1)
+        header['num_logger_fields'] = 1
+
+        fields = [parser.parse_field_definition(version=1)]
+        return parser, header, fields
+
+    def test_progress_callback_called_with_correct_args(self):
+        """Test progress callback receives (current, total) tuples."""
+        parser, header, fields = self._build_multi_record_parser(1500)
+
+        calls = []
+        def cb(current, total):
+            calls.append((current, total))
+
+        parser.parse_data_blocks(header, fields, progress_callback=cb)
+
+        # Should be called at 500 and 1000 during loop, plus final call
+        self.assertTrue(len(calls) >= 3)
+        for current, total in calls:
+            self.assertIsInstance(current, int)
+            self.assertIsInstance(total, int)
+            self.assertGreater(total, 0)
+
+    def test_progress_callback_none_no_error(self):
+        """Test that None progress_callback causes no error."""
+        parser, header, fields = self._build_multi_record_parser(10)
+
+        # Should not raise
+        records = parser.parse_data_blocks(header, fields, progress_callback=None)
+        self.assertEqual(len(records), 10)
+
+    def test_progress_callback_frequency(self):
+        """Test callback fires every 500 records."""
+        parser, header, fields = self._build_multi_record_parser(1200)
+
+        calls = []
+        def cb(current, total):
+            calls.append(current)
+
+        parser.parse_data_blocks(header, fields, progress_callback=cb)
+
+        # Loop callbacks at record 500 and 1000; final callback at 1200
+        loop_calls = [c for c in calls if c < 1200]
+        self.assertEqual(loop_calls, [500, 1000])
+
+    def test_progress_callback_final_signals_completion(self):
+        """Test that the final callback has current == total."""
+        parser, header, fields = self._build_multi_record_parser(600)
+
+        calls = []
+        def cb(current, total):
+            calls.append((current, total))
+
+        parser.parse_data_blocks(header, fields, progress_callback=cb)
+
+        # Final call should have current == total
+        last_current, last_total = calls[-1]
+        self.assertEqual(last_current, last_total)
+
+    def test_parse_forwards_progress_callback(self):
+        """Test that parse() forwards progress_callback to parse_data_blocks."""
+        calls = []
+        def cb(current, total):
+            calls.append((current, total))
+
+        # Build a complete file with 600 records and correct data_begin_index
+        # v1 header = 22 bytes, 1 field × 55 bytes = 55 bytes, data starts at 77
+        data_begin = 22 + 55
+        header = b'MLVLG\x00'
+        header += struct.pack('>H', 1)               # version
+        header += struct.pack('>I', 1699000000)       # timestamp
+        header += struct.pack('>H', 22)               # info_data_start
+        header += struct.pack('>I', data_begin)       # data_begin_index
+        header += struct.pack('>H', 1)                # record_length
+        header += struct.pack('>H', 1)                # num_logger_fields
+
+        field1 = self.create_field_definition(field_type=0, name="Val")
+
+        data_blocks = b''
+        for i in range(600):
+            data_blocks += struct.pack('>B', 0)        # block type
+            data_blocks += struct.pack('>B', i % 256)  # counter
+            data_blocks += struct.pack('>H', i)        # timestamp
+            data_blocks += struct.pack('>B', i % 256)  # value
+            data_blocks += struct.pack('>B', 0)        # CRC
+
+        complete_file = header + field1 + data_blocks
+        with patch('builtins.open', mock_open(read_data=complete_file)):
+            parser = MLGParser('test.mlg')
+            parsed = parser.parse(progress_callback=cb)
+
+        self.assertTrue(len(calls) >= 2)
+
+    def test_cancelled_fn_immediate_returns_empty(self):
+        """Test that cancelled_fn returning True at record 0 yields 0 records."""
+        parser, header, fields = self._build_multi_record_parser(1000)
+
+        records = parser.parse_data_blocks(
+            header, fields, cancelled_fn=lambda: True)
+
+        self.assertEqual(len(records), 0)
+
+    def test_cancelled_fn_mid_parse_returns_partial(self):
+        """Test cancellation after 500 records returns ~500 partial records."""
+        parser, header, fields = self._build_multi_record_parser(2000)
+
+        call_count = [0]
+        def cancel_after_500():
+            call_count[0] += 1
+            # Called at record 0, 500, 1000, ... — cancel on second call (record 500)
+            return call_count[0] >= 2
+
+        records = parser.parse_data_blocks(
+            header, fields, cancelled_fn=cancel_after_500)
+
+        self.assertEqual(len(records), 500)
+
+    def test_cancelled_fn_none_parses_all(self):
+        """Test that cancelled_fn=None parses all records."""
+        parser, header, fields = self._build_multi_record_parser(800)
+
+        records = parser.parse_data_blocks(
+            header, fields, cancelled_fn=None)
+
+        self.assertEqual(len(records), 800)
+
+    def test_cancelled_fn_never_triggers_parses_all(self):
+        """Test that cancelled_fn always returning False parses all records."""
+        parser, header, fields = self._build_multi_record_parser(800)
+
+        records = parser.parse_data_blocks(
+            header, fields, cancelled_fn=lambda: False)
+
+        self.assertEqual(len(records), 800)
+
+    def test_cancelled_fn_fires_final_progress(self):
+        """Test that cancelled parse still fires final progress_callback."""
+        parser, header, fields = self._build_multi_record_parser(1500)
+
+        progress_calls = []
+        def cb(current, total):
+            progress_calls.append((current, total))
+
+        call_count = [0]
+        def cancel_after_500():
+            call_count[0] += 1
+            return call_count[0] >= 2  # cancel at record 500
+
+        parser.parse_data_blocks(
+            header, fields, progress_callback=cb, cancelled_fn=cancel_after_500)
+
+        # Final callback should have current == total (both equal record_count)
+        self.assertTrue(len(progress_calls) > 0)
+        last_current, last_total = progress_calls[-1]
+        self.assertEqual(last_current, last_total)
+
 
 class TestLogData(unittest.TestCase):
     """Tests for LogData class - data model and access."""
